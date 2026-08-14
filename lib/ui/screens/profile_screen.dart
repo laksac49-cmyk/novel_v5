@@ -200,8 +200,9 @@ class _ProfileScreenState extends State<ProfileScreen>
   Future<void> _toggleFollow() async {
     final id = widget.viewingUserId ?? widget.profile.id;
     if (id == null || _isOwnProfile) return;
+    final wasFollowing = _isFollowing;
     try {
-      final dynamic res = _isFollowing
+      final dynamic res = wasFollowing
           ? await widget.apiService.unfollowAuthor(id)
           : await widget.apiService.followAuthor(id);
       if (!mounted) return;
@@ -210,7 +211,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         followers = (res['followers'] as num?)?.toInt();
       }
       setState(() {
-        _isFollowing = !_isFollowing;
+        _isFollowing = !wasFollowing;
         if (_userProfile != null) {
           if (followers != null) {
             _userProfile = {..._userProfile!, 'followers': followers};

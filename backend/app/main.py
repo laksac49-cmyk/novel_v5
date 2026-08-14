@@ -672,6 +672,56 @@ def require_user(authorization: str | None = Header(default=None)) -> dict[str, 
     return {"user_id": uid}
 
 
+def optional_user(authorization: str | None = Header(default=None)) -> dict[str, Any] | None:
+    """Like require_user but returns None instead of 401 when no/invalid token.
+    Used for public endpoints that enrich response when the caller is logged in.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        encoded_payload, provided_signature = token.split(".", 1)
+    except ValueError:
+        return None
+    expected_signature = hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        encoded_payload.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, provided_signature):
+        return None
+    try:
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded_payload.encode("ascii")).decode("utf-8")
+        )
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if payload.get("role") != "user":
+        return None
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub.startswith("user:"):
+        return None
+    expires_raw = payload.get("exp")
+    if not isinstance(expires_raw, str):
+        return None
+    try:
+        expires_at = datetime.fromisoformat(expires_raw)
+    except ValueError:
+        return None
+    if expires_at <= datetime.now(timezone.utc):
+        return None
+    try:
+        uid = int(sub.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+    reason = _user_access_block_reason(uid)
+    if reason:
+        return None
+    return {"user_id": uid}
+
+
 def _public_image_path(filename: str) -> str:
     return f"/uploads/{filename}"
 
@@ -1087,20 +1137,8 @@ def get_me(user: dict[str, Any] = Depends(require_user)):
     library_count = int(library_count_rows[0]["c"]) if library_count_rows else 0
     reading_list_count = int(reading_list_count_rows[0]["c"]) if reading_list_count_rows else 0
     completed_count = int(completed_rows[0]["c"]) if completed_rows else 0
-    try:
-        _ensure_author_follows_columns()
-        followers_rows = fetch_all(
-            "SELECT COUNT(*) AS c FROM author_follows WHERE author_id=%s",
-            (user["user_id"],),
-        )
-        following_rows = fetch_all(
-            "SELECT COUNT(*) AS c FROM author_follows WHERE user_id=%s",
-            (user["user_id"],),
-        )
-        followers = int(followers_rows[0]["c"]) if followers_rows else 0
-        following = int(following_rows[0]["c"]) if following_rows else 0
-    except Exception:
-        followers, following = 0, 0
+    followers = _count_followers(user["user_id"])
+    following = _count_following(user["user_id"])
     display_name = _row_get(u, "display_name") or (_row_get(u, "email") or "Reader").split("@")[0]
     username = "@" + display_name.lower().replace(" ", "")
     return {
@@ -1152,20 +1190,12 @@ def get_user_profile(user_id: int):
         """,
         (user_id,),
     )
-    followers_rows = fetch_all(
-        "SELECT COUNT(*) AS c FROM author_follows WHERE author_id=%s",
-        (user_id,),
-    )
-    following_rows = fetch_all(
-        "SELECT COUNT(*) AS c FROM author_follows WHERE user_id=%s",
-        (user_id,),
-    )
     story_count = int(story_count_rows[0]["c"]) if story_count_rows else 0
     library_count = int(library_count_rows[0]["c"]) if library_count_rows else 0
     reading_list_count = int(reading_list_count_rows[0]["c"]) if reading_list_count_rows else 0
     completed_count = int(completed_rows[0]["c"]) if completed_rows else 0
-    followers = int(followers_rows[0]["c"]) if followers_rows else 0
-    following = int(following_rows[0]["c"]) if following_rows else 0
+    followers = _count_followers(user_id)
+    following = _count_following(user_id)
     display_name = _row_get(u, "display_name") or (_row_get(u, "email") or "Reader").split("@")[0]
     username = "@" + display_name.lower().replace(" ", "")
     return {
@@ -2190,13 +2220,33 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
         return default
 
 
+def _live_book_likes_count(book_id: int | None) -> int:
+    """Count likes from book_likes table (source of truth)."""
+    if book_id is None:
+        return 0
+    try:
+        _ensure_book_likes_table()
+        count_rows = fetch_all(
+            "SELECT COUNT(*) AS c FROM book_likes WHERE book_id=%s",
+            (int(book_id),),
+        )
+        return int(count_rows[0]["c"]) if count_rows else 0
+    except Exception as exc:
+        LOGGER.warning("live likes_count failed for book %s: %s", book_id, exc)
+        return 0
+
+
 def _serialize_book(row: Any) -> dict[str, Any]:
-    data = dict(row) if not isinstance(row, dict) else row
+    data = dict(row) if not isinstance(row, dict) else dict(row)
+    book_id = _row_get(row, "id")
+    live_likes = _live_book_likes_count(book_id)
     return {
         **data,
         "cover_path": _normalize_cover_path(_row_get(row, "cover_path")),
         "author_user_id": _row_get(row, "user_id"),
-        "tags": _story_tags_for_book(_row_get(row, "id")),
+        "tags": _story_tags_for_book(book_id),
+        "likes_count": live_likes,
+        "likes": live_likes,  # alias used by some clients
     }
 
 
@@ -2589,8 +2639,39 @@ def list_comments_by_chapter_id(chapter_id: int):
     return {"items": [_serialize_comment_row(r) for r in rows]}
 
 
-def _ensure_author_follows_columns() -> None:
-    """MySQL may have legacy author_user_id/follower_user_id; normalize to user_id/author_id."""
+def _ensure_author_follows_table() -> None:
+    """Ensure author_follows exists (SQLite + MySQL) and normalize legacy column names."""
+    try:
+        if USE_SQLITE:
+            execute_write(
+                """
+                CREATE TABLE IF NOT EXISTS author_follows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    author_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, author_id)
+                )
+                """,
+                (),
+            )
+        else:
+            execute_write(
+                """
+                CREATE TABLE IF NOT EXISTS author_follows (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    author_id INT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_follow (user_id, author_id)
+                )
+                """,
+                (),
+            )
+    except Exception as exc:
+        LOGGER.warning("author_follows create failed: %s", exc)
+
+    # MySQL legacy column rename/backfill
     if USE_SQLITE:
         return
     try:
@@ -2600,12 +2681,49 @@ def _ensure_author_follows_columns() -> None:
             return
         if "user_id" not in names and "follower_user_id" in names:
             execute_write("ALTER TABLE author_follows ADD COLUMN user_id INT NULL", ())
-            execute_write("UPDATE author_follows SET user_id = follower_user_id WHERE user_id IS NULL", ())
+            execute_write(
+                "UPDATE author_follows SET user_id = follower_user_id WHERE user_id IS NULL",
+                (),
+            )
         if "author_id" not in names and "author_user_id" in names:
             execute_write("ALTER TABLE author_follows ADD COLUMN author_id INT NULL", ())
-            execute_write("UPDATE author_follows SET author_id = author_user_id WHERE author_id IS NULL", ())
+            execute_write(
+                "UPDATE author_follows SET author_id = author_user_id WHERE author_id IS NULL",
+                (),
+            )
     except Exception as exc:
         LOGGER.warning("author_follows column ensure failed: %s", exc)
+
+
+def _count_followers(author_id: int) -> int:
+    try:
+        _ensure_author_follows_table()
+        rows = fetch_all(
+            "SELECT COUNT(*) AS c FROM author_follows WHERE author_id=%s",
+            (author_id,),
+        )
+        return int(rows[0]["c"]) if rows else 0
+    except Exception as exc:
+        LOGGER.warning("count followers failed for %s: %s", author_id, exc)
+        return 0
+
+
+def _count_following(user_id: int) -> int:
+    try:
+        _ensure_author_follows_table()
+        rows = fetch_all(
+            "SELECT COUNT(*) AS c FROM author_follows WHERE user_id=%s",
+            (user_id,),
+        )
+        return int(rows[0]["c"]) if rows else 0
+    except Exception as exc:
+        LOGGER.warning("count following failed for %s: %s", user_id, exc)
+        return 0
+
+
+# backward-compatible alias
+def _ensure_author_follows_columns() -> None:
+    _ensure_author_follows_table()
 
 
 
@@ -2643,18 +2761,22 @@ def _ensure_book_likes_table() -> None:
 
 
 @app.get("/api/books/{book_id}/like")
-def get_book_like(book_id: int, user: dict[str, Any] = Depends(require_user)):
+def get_book_like(book_id: int, user: dict[str, Any] | None = Depends(optional_user)):
+    """Public: returns likes_count for everyone; includes liked=true only when authenticated."""
     _ensure_book_likes_table()
-    rows = fetch_all(
-        "SELECT id FROM book_likes WHERE user_id=%s AND book_id=%s",
-        (user["user_id"], book_id),
-    )
+    liked = False
+    if user is not None:
+        rows = fetch_all(
+            "SELECT id FROM book_likes WHERE user_id=%s AND book_id=%s",
+            (user["user_id"], book_id),
+        )
+        liked = bool(rows)
     count_rows = fetch_all(
         "SELECT COUNT(*) AS c FROM book_likes WHERE book_id=%s",
         (book_id,),
     )
     return {
-        "liked": bool(rows),
+        "liked": liked,
         "likes_count": int(count_rows[0]["c"]) if count_rows else 0,
     }
 
@@ -2703,7 +2825,7 @@ def unlike_book(book_id: int, user: dict[str, Any] = Depends(require_user)):
 
 @app.post("/api/authors/{author_id}/follow")
 def follow_author(author_id: int, user: dict[str, Any] = Depends(require_user)):
-    _ensure_author_follows_columns()
+    _ensure_author_follows_table()
     if user["user_id"] == author_id:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
     if USE_SQLITE:
@@ -2716,17 +2838,19 @@ def follow_author(author_id: int, user: dict[str, Any] = Depends(require_user)):
             "INSERT IGNORE INTO author_follows (user_id, author_id) VALUES (%s, %s)",
             (user["user_id"], author_id),
         )
-    followers_rows = fetch_all(
-        "SELECT COUNT(*) AS c FROM author_follows WHERE author_id=%s",
-        (author_id,),
-    )
-    followers = int(followers_rows[0]["c"]) if followers_rows else 0
-    return {"ok": True, "following": True, "followers": followers}
+    followers = _count_followers(author_id)
+    following_count = _count_following(user["user_id"])
+    return {
+        "ok": True,
+        "following": True,
+        "followers": followers,
+        "following_count": following_count,
+    }
 
 
 @app.get("/api/authors/{author_id}/follow")
 def check_author_follow(author_id: int, user: dict[str, Any] = Depends(require_user)):
-    _ensure_author_follows_columns()
+    _ensure_author_follows_table()
     rows = fetch_all(
         "SELECT id FROM author_follows WHERE user_id=%s AND author_id=%s",
         (user["user_id"], author_id),
@@ -2736,19 +2860,20 @@ def check_author_follow(author_id: int, user: dict[str, Any] = Depends(require_u
 
 @app.delete("/api/authors/{author_id}/follow")
 def unfollow_author(author_id: int, user: dict[str, Any] = Depends(require_user)):
-    _ensure_author_follows_columns()
+    _ensure_author_follows_table()
     _, affected = execute_write(
         "DELETE FROM author_follows WHERE user_id=%s AND author_id=%s",
         (user["user_id"], author_id),
     )
-    if affected == 0:
-        raise HTTPException(status_code=404, detail="Follow not found")
-    followers_rows = fetch_all(
-        "SELECT COUNT(*) AS c FROM author_follows WHERE author_id=%s",
-        (author_id,),
-    )
-    followers = int(followers_rows[0]["c"]) if followers_rows else 0
-    return {"ok": True, "following": False, "followers": followers}
+    # Idempotent: treat missing row as already unfollowed
+    followers = _count_followers(author_id)
+    following_count = _count_following(user["user_id"])
+    return {
+        "ok": True,
+        "following": False,
+        "followers": followers,
+        "following_count": following_count,
+    }
 
 
 @app.get("/api/authors/{author_id}/books")
