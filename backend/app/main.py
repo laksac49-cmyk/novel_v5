@@ -1339,7 +1339,7 @@ def bootstrap():
 
     books = fetch_all(
         """
-        SELECT id, title, author, description, cover_path, accent_hex, section_name,
+        SELECT id, user_id, title, author, description, cover_path, accent_hex, section_name,
                status_text, rating, genre, cta_label,
                COALESCE(primary_genre, genre) AS primary_genre,
                COALESCE(secondary_genre, '') AS secondary_genre,
@@ -1350,26 +1350,39 @@ def bootstrap():
         """
     )
 
-    recently_updated = [
-        {
-            "id": book["id"],
+    def _card(book: Any) -> dict[str, Any]:
+        """Full card payload for home rails (author id + live likes)."""
+        bid = book["id"]
+        live = _live_book_likes_count(bid)
+        return {
+            "id": bid,
+            "user_id": book.get("user_id"),
+            "author_user_id": book.get("user_id"),
             "title": book["title"],
             "author": book["author"],
-            "cover_path": _normalize_cover_path(book["cover_path"]),
-            "accent_hex": book["accent_hex"],
+            "description": book.get("description") or "",
+            "cover_path": _normalize_cover_path(book.get("cover_path")),
+            "accent_hex": book.get("accent_hex") or "#A1A1A1",
+            "section_name": book.get("section_name") or "",
+            "status_text": book.get("status_text") or "",
+            "rating": book.get("rating") or 0,
+            "genre": book.get("genre") or "",
+            "primary_genre": book.get("primary_genre") or book.get("genre") or "",
+            "secondary_genre": book.get("secondary_genre") or "",
+            "is_completed": book.get("is_completed") or 0,
+            "cta_label": book.get("cta_label") or "Read now",
+            "likes_count": live,
+            "likes": live,
         }
+
+    recently_updated = [
+        _card(book)
         for book in books
         if book["section_name"] == "recently_updated"
     ]
 
     recently_completed = [
-        {
-            "id": book["id"],
-            "title": book["title"],
-            "author": book["author"],
-            "cover_path": _normalize_cover_path(book["cover_path"]),
-            "accent_hex": book["accent_hex"],
-        }
+        _card(book)
         for book in books
         if book["section_name"] == "recently_completed"
     ]
@@ -1395,6 +1408,8 @@ def bootstrap():
         featured_raw = featured_candidates[0]
         featured_book = {
             "id": featured_raw["id"],
+            "user_id": featured_raw.get("user_id"),
+            "author_user_id": featured_raw.get("user_id"),
             "title": featured_raw["title"],
             "author": featured_raw["author"],
             "description": featured_raw["description"],
@@ -1404,6 +1419,7 @@ def bootstrap():
             "cta": featured_raw["cta_label"],
             "cover_path": _normalize_cover_path(featured_raw["cover_path"]),
             "tags": _story_tags_for_book(featured_raw["id"]),
+            "likes_count": _live_book_likes_count(featured_raw["id"]),
         }
 
     # Library entries are user-specific and loaded via GET /api/library after auth.
@@ -1512,10 +1528,7 @@ def bootstrap():
         "discover_tabs": discover_tabs,
         "recently_updated": recently_updated,
         "recently_completed": recently_completed,
-        "discover_books": [
-            {**book, "cover_path": _normalize_cover_path(book["cover_path"])}
-            for book in books
-        ],
+        "discover_books": [_card(book) for book in books],
         "featured_book": featured_book,
         "explore_topics": explore_topics,
         "library_entries": library_payload,
