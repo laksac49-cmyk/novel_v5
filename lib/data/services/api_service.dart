@@ -904,13 +904,19 @@ class ApiService {
     }
   }
 
-  Future<void> createWriterStory(Map<String, dynamic> payload) async {
+  Future<int> createWriterStory(Map<String, dynamic> payload) async {
     final response = await _post(
       '/api/write/stories',
       payload,
       timeout: const Duration(seconds: 8),
     );
     _ensureSuccessResponse(response);
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return (body['id'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      return 0;
+    }
   }
 
   Future<void> updateWriterStory(int id, Map<String, dynamic> payload) async {

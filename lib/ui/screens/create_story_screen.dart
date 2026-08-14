@@ -249,7 +249,13 @@ class _CreateStoryScreenState extends State<CreateStoryScreen> {
         await widget.apiService.updateWriterStory(id, payload);
         if (publish) await widget.apiService.publishWriterStory(id);
       } else {
-        await widget.apiService.createWriterStory(payload);
+        final id = await widget.apiService.createWriterStory(payload);
+        // Ensure live publish even if backend ignored status_text
+        if (publish && id > 0) {
+          try {
+            await widget.apiService.publishWriterStory(id);
+          } catch (_) {}
+        }
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);

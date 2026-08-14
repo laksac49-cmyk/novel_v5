@@ -414,6 +414,10 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                         value: 'review',
                         child: Text('Write a review'),
                       ),
+                      PopupMenuItem(
+                        value: 'report',
+                        child: Text('Report story'),
+                      ),
                     ],
                   );
                   if (action == 'list') {
@@ -431,6 +435,26 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                     final reviews =
                         await widget.apiService.fetchBookReviews(_book.id);
                     if (mounted) setState(() => _reviews = reviews);
+                  } else if (action == 'report') {
+                    try {
+                      final res = await widget.apiService.reportBook(_book.id);
+                      if (!mounted) return;
+                      final flagged = res['flagged_for_admin'] == true;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            flagged
+                                ? 'Report recorded. Story flagged for admin (3+ reports).'
+                                : 'Report submitted. Thank you.',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Could not report: $e')),
+                      );
+                    }
                   }
                 },
               ),
