@@ -152,14 +152,21 @@ class _CreateStoryScreenState extends State<CreateStoryScreen> {
     );
     controller.dispose();
     if (result == null || result.isEmpty || !mounted) return;
-    final exists = _genres.any((g) => g.toLowerCase() == result.toLowerCase());
+    var name = result.trim();
+    try {
+      name = await widget.apiService.createGenre(name);
+    } catch (_) {
+      // Still allow local use even if API fails
+    }
+    if (!mounted) return;
+    final exists = _genres.any((g) => g.toLowerCase() == name.toLowerCase());
     setState(() {
       if (!exists) {
-        _genres = [..._genres, result]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        _genres = [..._genres, name]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
       }
       _selectedGenre = _genres.firstWhere(
-        (g) => g.toLowerCase() == result.toLowerCase(),
-        orElse: () => result,
+        (g) => g.toLowerCase() == name.toLowerCase(),
+        orElse: () => name,
       );
     });
   }

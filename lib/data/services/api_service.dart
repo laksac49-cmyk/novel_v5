@@ -814,6 +814,22 @@ class ApiService {
     }
   }
 
+  /// Create a genre so it appears in the shared dropdown for everyone.
+  Future<String> createGenre(String name) async {
+    final response = await _post(
+      '/api/genres',
+      {'name': name.trim()},
+      timeout: const Duration(seconds: 8),
+    );
+    _ensureSuccessResponse(response);
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final n = (body['name'] as String?)?.trim();
+      if (n != null && n.isNotEmpty) return n;
+    } catch (_) {}
+    return name.trim();
+  }
+
   /// Publish a writer story (sets status_text to Published).
   Future<void> publishWriterStory(int storyId) async {
     final response = await _post(

@@ -1553,7 +1553,12 @@ def search_stories(
         g_like = "%" + g + "%"
         rows = fetch_all(
             """
-            SELECT id, title, author, description, cover_path, accent_hex, status_text, rating, genre
+            SELECT id, user_id, title, author, description, cover_path, accent_hex,
+                   status_text, rating, genre,
+                   COALESCE(primary_genre, genre) AS primary_genre,
+                   COALESCE(secondary_genre, '') AS secondary_genre,
+                   COALESCE(is_completed, 0) AS is_completed,
+                   section_name, cta_label
             FROM books
             WHERE (title LIKE %s OR author LIKE %s OR description LIKE %s)
               AND (
@@ -1562,6 +1567,7 @@ def search_stories(
                  OR COALESCE(secondary_genre, '') LIKE %s
               )
               AND rating >= %s
+              AND LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
             ORDER BY rating DESC, id DESC
             LIMIT %s
             """,
@@ -1570,21 +1576,23 @@ def search_stories(
     else:
         rows = fetch_all(
             """
-            SELECT id, title, author, description, cover_path, accent_hex, status_text, rating, genre
+            SELECT id, user_id, title, author, description, cover_path, accent_hex,
+                   status_text, rating, genre,
+                   COALESCE(primary_genre, genre) AS primary_genre,
+                   COALESCE(secondary_genre, '') AS secondary_genre,
+                   COALESCE(is_completed, 0) AS is_completed,
+                   section_name, cta_label
             FROM books
             WHERE (title LIKE %s OR author LIKE %s OR description LIKE %s)
               AND rating >= %s
+              AND LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
             ORDER BY rating DESC, id DESC
             LIMIT %s
             """,
             (q, q, q, min_rating, limit),
         )
-    return {
-        "items": [
-            {**row, "cover_path": _normalize_cover_path(row["cover_path"])}
-            for row in rows
-        ]
-    }
+    return {"items": [_serialize_book(row) for row in rows]}
+
 
 
 @app.get("/api/notifications")

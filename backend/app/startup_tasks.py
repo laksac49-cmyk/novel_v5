@@ -121,6 +121,16 @@ def _ensure_mysql_extra_tables(connection) -> int:
             """,
         ),
         (
+            "genres",
+            """
+            CREATE TABLE IF NOT EXISTS genres (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(80) NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ),
+        (
             "reading_list_items",
             """
             CREATE TABLE IF NOT EXISTS reading_list_items (

@@ -58,27 +58,124 @@ def register_inkitt_routes(
 
     _ensure_reports_table()
 
+    def _ensure_genres_table():
+        try:
+            execute_write(
+                """
+                CREATE TABLE IF NOT EXISTS genres (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                (),
+            )
+        except Exception:
+            try:
+                execute_write(
+                    """
+                    CREATE TABLE IF NOT EXISTS genres (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        name VARCHAR(80) NOT NULL UNIQUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """,
+                    (),
+                )
+            except Exception:
+                pass
+
+    _ensure_genres_table()
+
     @app.get("/api/genres")
     def list_genres():
-        rows = fetch_all(
-            """
-            SELECT DISTINCT genre AS name FROM books
-            WHERE genre IS NOT NULL AND TRIM(genre) <> ''
-            UNION
-            SELECT DISTINCT primary_genre AS name FROM books
-            WHERE primary_genre IS NOT NULL AND TRIM(primary_genre) <> ''
-            ORDER BY name
-            """
+        _ensure_genres_table()
+        names: list[str] = []
+        seen: set[str] = set()
+
+        def _add(n: str):
+            n = (n or "").strip()
+            if not n:
+                return
+            key = n.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            names.append(n)
+
+        try:
+            for row in fetch_all("SELECT name FROM genres ORDER BY name"):
+                if isinstance(row, dict):
+                    _add(str(row.get("name") or ""))
+                elif row:
+                    _add(str(row[0]))
+        except Exception:
+            pass
+
+        try:
+            rows = fetch_all(
+                """
+                SELECT DISTINCT genre AS name FROM books
+                WHERE genre IS NOT NULL AND TRIM(genre) <> ''
+                UNION
+                SELECT DISTINCT primary_genre AS name FROM books
+                WHERE primary_genre IS NOT NULL AND TRIM(primary_genre) <> ''
+                """
+            )
+            for row in rows:
+                if isinstance(row, dict):
+                    _add(str(row.get("name") or ""))
+                elif row:
+                    _add(str(row[0]))
+        except Exception:
+            pass
+
+        names.sort(key=lambda s: s.lower())
+        return {"items": names}
+
+    @app.post("/api/genres")
+    def create_genre(payload: dict[str, Any] = Body(...)):
+        """Create a genre so it appears in the shared dropdown for all users."""
+        _ensure_genres_table()
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Genre name required")
+        if len(name) > 80:
+            raise HTTPException(status_code=400, detail="Genre name too long")
+        existing = fetch_all(
+            "SELECT id, name FROM genres WHERE LOWER(name)=LOWER(%s) LIMIT 1",
+            (name,),
         )
-        items = []
-        for row in rows:
-            if isinstance(row, dict):
-                n = (row.get("name") or "").strip()
-            else:
-                n = str(row[0]).strip() if row else ""
-            if n and n not in items:
-                items.append(n)
-        return {"items": items}
+        if existing:
+            row = existing[0]
+            return {
+                "ok": True,
+                "id": row.get("id") if isinstance(row, dict) else row[0],
+                "name": row.get("name") if isinstance(row, dict) else row[1],
+                "already_exists": True,
+            }
+        try:
+            genre_id, _ = execute_write(
+                "INSERT INTO genres (name) VALUES (%s)",
+                (name,),
+            )
+        except Exception:
+            # race / unique
+            existing = fetch_all(
+                "SELECT id, name FROM genres WHERE LOWER(name)=LOWER(%s) LIMIT 1",
+                (name,),
+            )
+            if existing:
+                row = existing[0]
+                return {
+                    "ok": True,
+                    "id": row.get("id") if isinstance(row, dict) else row[0],
+                    "name": row.get("name") if isinstance(row, dict) else name,
+                    "already_exists": True,
+                }
+            raise HTTPException(status_code=400, detail="Could not create genre")
+        _bump()
+        return {"ok": True, "id": genre_id, "name": name, "already_exists": False}
 
     def _publish_impl(story_id: int, user: dict[str, Any] | None):
         uid = user.get("user_id") if isinstance(user, dict) else None
