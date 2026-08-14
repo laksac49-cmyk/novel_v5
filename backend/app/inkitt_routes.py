@@ -186,9 +186,29 @@ def register_inkitt_routes(
         owner = book.get("user_id") if isinstance(book, dict) else None
         if uid is not None and owner is not None and int(owner) != int(uid):
             raise HTTPException(status_code=403, detail="Not your story")
-        execute_write("UPDATE books SET status_text=%s WHERE id=%s", ("Published", story_id))
+        # Live on Discover: Published + recently_updated rail + near top of list
+        try:
+            execute_write(
+                """
+                UPDATE books
+                SET status_text=%s,
+                    section_name=%s,
+                    sort_order=%s
+                WHERE id=%s
+                """,
+                ("Published", "recently_updated", 0, story_id),
+            )
+        except Exception:
+            execute_write(
+                "UPDATE books SET status_text=%s WHERE id=%s",
+                ("Published", story_id),
+            )
         _bump()
-        return {"ok": True, "status_text": "Published"}
+        return {
+            "ok": True,
+            "status_text": "Published",
+            "section_name": "recently_updated",
+        }
 
     def _report_impl(book_id: int, user: dict[str, Any] | None, reason: str):
         if not user or not user.get("user_id"):

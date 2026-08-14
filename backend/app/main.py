@@ -1346,7 +1346,7 @@ def bootstrap():
                COALESCE(is_completed, 0) AS is_completed
         FROM books
         WHERE LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
-        ORDER BY sort_order
+        ORDER BY sort_order ASC, id DESC
         """
     )
 
@@ -2306,6 +2306,14 @@ def create_writer_story(
         ),
     )
     _set_story_tags(story_id, payload.tags)
+    if status == "Published":
+        try:
+            execute_write(
+                "UPDATE books SET section_name=%s, sort_order=%s WHERE id=%s",
+                ("recently_updated", 0, story_id),
+            )
+        except Exception:
+            pass
     try:
         execute_write(
             "UPDATE app_users SET is_author=1, is_author_active=1 WHERE id=%s",
@@ -2317,7 +2325,7 @@ def create_writer_story(
         except Exception:
             pass
     bump_content_version()
-    return {"ok": True, "id": story_id}
+    return {"ok": True, "id": story_id, "status_text": status}
 
 
 @app.put("/api/write/stories/{story_id}")
@@ -2394,10 +2402,17 @@ def get_writer_story(story_id: int):
 @app.get("/api/books/{book_id}")
 def get_public_book(book_id: int):
     rows = fetch_all(
-        "SELECT id, user_id, title, author, description, genre, cover_path, accent_hex, status_text, rating, content_warnings FROM books WHERE id=%s",
+        """
+        SELECT id, user_id, title, author, description, genre, cover_path, accent_hex,
+               status_text, rating, content_warnings
+        FROM books WHERE id=%s
+        """,
         (book_id,),
     )
     if not rows:
+        raise HTTPException(status_code=404, detail="Book not found")
+    status = str(_row_get(rows[0], "status_text") or "").strip().lower()
+    if status in ("draft", "unpublished", "private"):
         raise HTTPException(status_code=404, detail="Book not found")
     return _serialize_book(rows[0])
 
@@ -2914,7 +2929,7 @@ def unfollow_author(author_id: int, user: dict[str, Any] = Depends(require_user)
 
 @app.get("/api/authors/{author_id}/books")
 def list_author_books(author_id: int, exclude_id: int | None = None):
-    """Public list of books by a given author (user_id). Used for 'More Stories by Author'."""
+    """Public list of published books by a given author (user_id)."""
     if exclude_id is not None:
         rows = fetch_all(
             """
@@ -2922,6 +2937,7 @@ def list_author_books(author_id: int, exclude_id: int | None = None):
                    status_text, rating
             FROM books
             WHERE user_id=%s AND id!=%s
+              AND LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
             ORDER BY id DESC
             LIMIT 20
             """,
@@ -2934,6 +2950,7 @@ def list_author_books(author_id: int, exclude_id: int | None = None):
                    status_text, rating
             FROM books
             WHERE user_id=%s
+              AND LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
             ORDER BY id DESC
             LIMIT 20
             """,
