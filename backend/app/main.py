@@ -1350,10 +1350,24 @@ def bootstrap():
         """
     )
 
+    # One query for all home like counts (avoid N+1)
+    likes_map: dict[int, int] = {}
+    try:
+        _ensure_book_likes_table()
+        like_rows = fetch_all(
+            "SELECT book_id, COUNT(*) AS c FROM book_likes GROUP BY book_id"
+        )
+        for lr in like_rows or []:
+            bid = lr.get("book_id") if isinstance(lr, dict) else None
+            if bid is not None:
+                likes_map[int(bid)] = int(lr.get("c") or 0)
+    except Exception as exc:
+        LOGGER.warning("batch likes_map failed: %s", exc)
+
     def _card(book: Any) -> dict[str, Any]:
         """Full card payload for home rails (author id + live likes)."""
         bid = book["id"]
-        live = _live_book_likes_count(bid)
+        live = int(likes_map.get(int(bid), 0))
         return {
             "id": bid,
             "user_id": book.get("user_id"),
@@ -2454,7 +2468,7 @@ def list_tags(q: str | None = None):
 
 @app.get("/api/tags/{tag_name}/books")
 def list_books_by_tag(tag_name: str):
-    """Return all books that have the given hashtag (admin-created tags only)."""
+    """Return published books that have the given hashtag (admin-created tags only)."""
     clean = tag_name.strip().lstrip("#")
     rows = fetch_all(
         """
@@ -2462,6 +2476,7 @@ def list_books_by_tag(tag_name: str):
         JOIN book_tags bt ON bt.book_id = b.id
         JOIN tags t ON t.id = bt.tag_id
         WHERE t.name = %s
+          AND LOWER(COALESCE(b.status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
         ORDER BY b.id DESC
         LIMIT 100
         """,
