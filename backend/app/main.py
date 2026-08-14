@@ -88,6 +88,7 @@ class StoryCreateRequest(BaseModel):
     cover_path: str = ""
     tags: list[str] = []
     content_warnings: str = ""
+    status_text: str = "Draft"  # pass "Published" to auto-publish on create
 
 
 class StoryUpdateRequest(BaseModel):
@@ -98,6 +99,7 @@ class StoryUpdateRequest(BaseModel):
     cover_path: str | None = None
     tags: list[str] | None = None
     content_warnings: str | None = None
+    status_text: str | None = None
 
 
 class ReviewCreateRequest(BaseModel):
@@ -1343,6 +1345,7 @@ def bootstrap():
                COALESCE(secondary_genre, '') AS secondary_genre,
                COALESCE(is_completed, 0) AS is_completed
         FROM books
+        WHERE LOWER(COALESCE(status_text, 'draft')) NOT IN ('draft', 'unpublished', 'private')
         ORDER BY sort_order
         """
     )
@@ -2257,13 +2260,17 @@ def create_writer_story(
 ):
     cover = _normalize_cover_path(payload.cover_path)
     warnings = (payload.content_warnings or "").strip()
+    status = (payload.status_text or "Draft").strip() or "Draft"
+    # Client requirement: publishing a story makes it live immediately
+    if status.lower() in ("publish", "published", "live", "public"):
+        status = "Published"
     story_id, _ = execute_write(
         """
         INSERT INTO books (
             user_id, title, author, description, cover_path, accent_hex, section_name,
             status_text, rating, genre, primary_genre, cta_label, sort_order, content_warnings
         )
-        VALUES (%s, %s, %s, %s, %s, '#557E7A', 'recently_updated', 'Draft', 0.0, %s, %s, 'Read now', 999, %s)
+        VALUES (%s, %s, %s, %s, %s, '#557E7A', 'recently_updated', %s, 0.0, %s, %s, 'Read now', 999, %s)
         """,
         (
             user["user_id"],
@@ -2271,6 +2278,7 @@ def create_writer_story(
             payload.author,
             payload.description,
             cover,
+            status,
             payload.genre,
             payload.genre,
             warnings,
@@ -2315,10 +2323,16 @@ def update_writer_story(
         if payload.cover_path is not None
         else _row_get(current, "cover_path")
     )
+    next_status = _row_get(current, "status_text") or "Draft"
+    if payload.status_text is not None:
+        st = payload.status_text.strip() or "Draft"
+        if st.lower() in ("publish", "published", "live", "public"):
+            st = "Published"
+        next_status = st
     _, affected = execute_write(
         """
         UPDATE books
-        SET title=%s, author=%s, description=%s, genre=%s, primary_genre=%s, cover_path=%s, user_id=%s, content_warnings=%s
+        SET title=%s, author=%s, description=%s, genre=%s, primary_genre=%s, cover_path=%s, user_id=%s, content_warnings=%s, status_text=%s
         WHERE id=%s
         """,
         (
@@ -2330,6 +2344,7 @@ def update_writer_story(
             next_cover,
             user["user_id"],
             next_warnings,
+            next_status,
             story_id,
         ),
     )
@@ -3960,6 +3975,25 @@ def list_user_activity(user_id: int):
         pass
     items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     return {"items": items[:40]}
+
+try:
+    from .inkitt_routes import register_inkitt_routes
+
+    def _fetch_one(query: str, params: tuple[Any, ...] | None = None):
+        rows = fetch_all(query, params)
+        return rows[0] if rows else None
+
+    register_inkitt_routes(
+        app,
+        fetch_all=fetch_all,
+        fetch_one=_fetch_one,
+        execute_write=execute_write,
+        require_user=require_user,
+        require_admin=require_admin,
+        bump_content_version=bump_content_version,
+    )
+except Exception as _inkitt_exc:
+    LOGGER.warning("inkitt_routes not registered: %s", _inkitt_exc)
 
 try:
     from .admin_tags import register_admin_tag_routes
