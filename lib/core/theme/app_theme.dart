@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const Color brand = Color(0xFF00A88E);
+  static const Color brand = Color(0xFF119C95);
   static const Color ink = Color(0xFF131313);
   static const Color muted = Color(0xFF767676);
   static const Color surface = Colors.white;
