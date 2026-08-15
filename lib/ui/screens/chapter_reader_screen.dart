@@ -1055,7 +1055,7 @@ class _ChapterReaderScreenState extends State<ChapterReaderScreen> {
                                           16, 12, 16, 12,
                                         ),
                                         itemCount: comments.length,
-                                        separatorBuilder: (_, __) =>
+                                        separatorBuilder: (_, _) =>
                                             const SizedBox(height: 16),
                                         itemBuilder: (_, i) {
                                           final c = comments[i];

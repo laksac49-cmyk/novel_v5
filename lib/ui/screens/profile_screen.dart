@@ -813,7 +813,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                                                               child: Image.network(
                                                                 widget.apiService.resolveAssetUrl(cPath),
                                                                 width: 40, height: 56, fit: BoxFit.cover,
-                                                                errorBuilder: (_, __, ___) => const Icon(Icons.menu_book),
+                                                                errorBuilder: (_, _, _) => const Icon(Icons.menu_book),
                                                               ),
                                                             )
                                                           : const Icon(Icons.menu_book),
@@ -1655,7 +1655,7 @@ class _ReadingListCollage extends StatelessWidget {
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        errorBuilder: (_, __, ___) => Container(color: const Color(0xFFF1F5F9)),
+        errorBuilder: (_, _, _) => Container(color: const Color(0xFFF1F5F9)),
       );
     }
     // 2x2 grid
@@ -1696,7 +1696,7 @@ class _ReadingListCollage extends StatelessWidget {
       fit: BoxFit.cover,
       width: double.infinity,
       height: double.infinity,
-      errorBuilder: (_, __, ___) => Container(color: const Color(0xFFE8EEF5)),
+      errorBuilder: (_, _, _) => Container(color: const Color(0xFFE8EEF5)),
     );
   }
 }
